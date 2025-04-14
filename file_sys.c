@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include "file_sys.h"
 
 char *dist; // 模拟磁盘
