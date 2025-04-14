@@ -35,7 +35,6 @@ static void my_rmdir();
 
 static void my_create();
 
-// todo
 static void my_rm();
 
 static int parse_path(const char src[16], char dest[16][16], size_t *dest_size_ptr);
@@ -54,7 +53,9 @@ static void rewrite_data(fcb *tar_fcb_ptr, char data[], size_t n);
 
 static void get_dir(fcb *dir_ptr, fcb dir[], size_t *dir_size_ptr);
 
-// 初始化，读取数据文件到内存，如果数据文件存在则正常读取，不存在则先初始化内存的各种上下文信息，等程序退出时会自动创建数据文件并按照预定结构写入
+/**
+ * 初始化，读取数据文件到内存，如果数据文件存在则正常读取，不存在则先初始化内存的各种上下文信息，等程序退出时会自动创建数据文件并按照预定结构写入
+ */
 void start_sys(void) {
     FILE *data_file;
     size_t read;
@@ -130,7 +131,9 @@ void start_sys(void) {
     }
 }
 
-// 循环读取从控制台输入的一行命令，不支持换行，只能一行
+/**
+ * 循环读取从控制台输入的一行命令，不支持换行，只能一行
+ */
 void command() {
     int i;
     int j;
@@ -185,7 +188,9 @@ void command() {
     }
 }
 
-// 退出当前系统需要完成的收尾操作
+/**
+ * 退出当前系统需要完成的收尾操作
+ */
 static void sys_exit(void) {
     // 刷新 blk0 到虚拟磁盘
     memcpy(dist, &blk0, sizeof(blk0));
@@ -197,7 +202,9 @@ static void sys_exit(void) {
     free(dist); // 释放分配内存
 }
 
-// 遵循传统命令行格式，打印当前路径 + "# "，如"/folder1/folder2# "
+/**
+ * 遵循传统命令行格式，打印当前路径 + "# "，如 "/folder1/folder2# "
+ */
 static void print_path(void) {
     char path[64];
     size_t path_size = 0;
@@ -211,7 +218,9 @@ static void print_path(void) {
     printf("%s# ", path);
 }
 
-// 持久化虚拟磁盘数据
+/**
+ * 持久化虚拟磁盘数据
+ */
 static void persistence(void) {
     // 以写入二进制形式打开数据文件
     FILE *data_file = fopen(REAL_DATA_FILE, "wb");
@@ -567,12 +576,12 @@ static void my_create() {
 
         // 最后一个路径段为文件名
         if (i == paths_size - 1) {
-            if (get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb))
-                create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 1);
-            else {
+            if (!get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
                 printf("%s: File already exist", cmd_arg);
                 return;
             }
+
+            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 1);
             break;
         }
 
@@ -590,7 +599,67 @@ static void my_create() {
  * 删除文件，路径不能包含 "." 和 ".."
  */
 static void my_rm() {
-    // todo
+    if (cmd_args_size != 2) { // 参数长度校验
+        printf("Unknown command: %s\n", cmd_arg);
+        return;
+    }
+
+    // 解析路径
+    char paths[16][16];
+    size_t paths_size = 0;
+    if (parse_path(cmd_args[1], paths, &paths_size)) {
+        printf("Unknown command: %s\n", cmd_arg);
+        return;
+    }
+    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
+
+    // 校验是否含有 "." 和 ".."
+    for (int i = 0; i < paths_size; ++i) {
+        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
+            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
+            return;
+        }
+    }
+
+    fcb prev_fcb; // 上一级目录的 FCB
+    fcb cur_fcb; // 当前目录的 FCB
+    int i = 0;
+    if (!strcmp(paths[0], "/")) { // 绝对路径
+        i = 1;
+        cur_fcb = blk0.root_dir_fcb;
+    } else { // 相对路径
+        i = 0;
+        cur_fcb = fcb_stack[fcb_stack_size - 1];
+        if (fcb_stack_size > 1) prev_fcb = fcb_stack[fcb_stack_size - 2];
+    }
+
+    // 遍历 paths，将 cur_fcb 移动到目标文件，同时维护 prev_fcb
+    while (1) {
+        fcb tar_fcb;
+
+        // 最后一个路径段为文件名
+        if (i == paths_size - 1) {
+            // 如果不存在目标文件
+            if (get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
+                printf("%s: No such file", cmd_arg);
+                return;
+            }
+
+            rmfcb_in(&prev_fcb, &cur_fcb);
+            break;
+        }
+
+        // 不存在目录，返回错误
+        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb)) {
+            printf("%s: No such file", cmd_arg);
+            return;
+        }
+
+        prev_fcb = cur_fcb;
+        cur_fcb = tar_fcb;
+    }
+
+    printf("%s: File created", cmd_arg);
 }
 
 /**
