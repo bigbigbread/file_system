@@ -33,7 +33,6 @@ static void my_mkdir();
 
 static void my_rmdir();
 
-// todo
 static void my_create();
 
 // todo
@@ -47,7 +46,7 @@ static int get_fcb_from(fcb *dir_fcb_ptr, char filename[16], unsigned char is_fi
 
 static unsigned short next_free_block(void);
 
-static int create_dir_in(fcb *dir_fcb_ptr, char *dir_name, fcb *fcb_ptr);
+static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned char is_file);
 
 static void rmfcb_in(fcb *dir_ptr, fcb *fcb_ptr);
 
@@ -410,8 +409,7 @@ static void my_cd() {
 }
 
 /**
- * 创建文件夹。
- * 路径段不能含有 ".." 和 "."。
+ * 创建文件夹，路径段不能含有 ".." 和 "."。
  */
 static void my_mkdir() {
     if (cmd_args_size != 2) { // 参数长度校验
@@ -426,9 +424,7 @@ static void my_mkdir() {
         printf("Unknown command: %s\n", cmd_arg);
         return;
     }
-
-    // 如果解析后的路径为空，直接返回
-    if (paths_size == 0) return;
+    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
 
     // 校验合法性
     for (int i = 0; i < paths_size; ++i) {
@@ -437,8 +433,6 @@ static void my_mkdir() {
             return;
         }
     }
-
-    // 创建 fcb，分配虚拟磁盘空间
 
     fcb cur_fcb; // 当前目录的 FCB
     int i = 0;
@@ -450,13 +444,13 @@ static void my_mkdir() {
         cur_fcb = fcb_stack[fcb_stack_size - 1];
     }
 
-    // 遍历每个路径段
+    // 遍历路径段
     for (; i < paths_size; i++) {
         fcb tar_fcb;
 
         // 不存在目录，需要创建
         if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
-            create_dir_in(&cur_fcb, paths[i], &tar_fcb);
+            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 0);
 
         cur_fcb = tar_fcb;
     }
@@ -531,24 +525,82 @@ static void my_rmdir() {
     rmfcb_in(&prev_fcb, &cur_fcb);
 }
 
+/**
+ * 创建文件，路径段不能含有 ".." 和 "."。
+ */
 static void my_create() {
-    // todo
-    printf("Not supported yet...\n");
-}
+    if (cmd_args_size != 2) { // 参数长度校验
+        printf("Unknown command: %s\n", cmd_arg);
+        return;
+    }
 
-static void my_rm() {
-    // todo
-    printf("Not supported yet...\n");
+    // 解析路径
+    char paths[16][16];
+    size_t paths_size = 0;
+    if (parse_path(cmd_args[1], paths, &paths_size)) {
+        printf("Unknown command: %s\n", cmd_arg);
+        return;
+    }
+    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
+
+    // 校验是否含有 "." 和 ".."
+    for (int i = 0; i < paths_size; ++i) {
+        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
+            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
+            return;
+        }
+    }
+
+    fcb cur_fcb; // 当前目录的 FCB
+    int i = 0;
+    if (!strcmp(paths[0], "/")) { // 绝对路径
+        i = 1;
+        cur_fcb = blk0.root_dir_fcb;
+    } else { // 相对路径
+        i = 0;
+        cur_fcb = fcb_stack[fcb_stack_size - 1];
+    }
+
+    // 遍历路径段
+    while (1) {
+        fcb tar_fcb;
+
+        // 最后一个路径段为文件名
+        if (i == paths_size - 1) {
+            if (get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb))
+                create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 1);
+            else {
+                printf("%s: File already exist", cmd_arg);
+                return;
+            }
+            break;
+        }
+
+        // 不存在目录，需要创建
+        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
+            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 0);
+
+        cur_fcb = tar_fcb;
+    }
+
+    printf("%s: File created", cmd_arg);
 }
 
 /**
- * 解析路径字符串为路径段数组，会校验格式是否正确，但不会校验路径是否真实存在。
- * "/a/b" --> ["/", "a", "b"]；
- * "a/b" --> ["a", "b"]；
- * "./a/b/c/.././.." --> [".", "a", "b", "c", "..", ".", ".."]；
- * "/a/b/" --> 格式错误；
- * "a/b/" --> 格式错误。
- * "/.." --> ["/", ".."]。
+ * 删除文件，路径不能包含 "." 和 ".."
+ */
+static void my_rm() {
+    // todo
+}
+
+/**
+ * 解析路径字符串为路径段数组，会校验格式是否正确，但不会校验路径是否真实存在。</br>
+ * "/a/b" --> ["/", "a", "b"]</br>
+ * "a/b" --> ["a", "b"]</br>
+ * "./a/b/c/.././.." --> [".", "a", "b", "c", "..", ".", ".."]</br>
+ * "/a/b/" --> 格式错误</br>
+ * "a/b/" --> 格式错误</br>
+ * "/.." --> ["/", ".."]
  * @param src 整个路径
  * @param dest 接收缓冲区
  * @param dest_size_ptr 数组长度接收缓冲区
@@ -659,28 +711,40 @@ static unsigned short next_free_block(void) {
 }
 
 /**
- * 在指定目录下创建目录
+ * 在指定目录下创建空目录或空文件
  * @param dir_fcb_ptr 目标目录的 FCB
- * @param dir_name 要创建目录的名称
- * @param fcb_ptr 新目录的 FCB 的接收缓冲区
- * @return 0：成功创建；1：当前目录下有重名目录
+ * @param name 要创建目录或文件（包括扩展名）的名称
+ * @param fcb_ptr 新 FCB 的接收缓冲区
+ * @param is_file 创建目录还是创建文件
+ * @return 0：成功创建；1：当前目录下有重名
  */
-static int create_dir_in(fcb *dir_fcb_ptr, char *dir_name, fcb *fcb_ptr) {
-    // 判断是否有重名目录
+static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned char is_file) {
+    // 截取不包含扩展名的名称
+    char filename[16];
+    size_t filename_size = 0;
+    for (int i = 0;; i++) {
+        if (name[i] == '\0' || name[i] == '.') {
+            filename[filename_size++] = '\0';
+            break;
+        }
+        filename[filename_size++] = name[i];
+    }
+
+    // 判断是否有重名
     fcb dir[20];
     get_data_from_dist(dir, dir_fcb_ptr->first, dir_fcb_ptr->len);
     size_t dir_size = dir_fcb_ptr->len / sizeof(fcb);
     for (int i = 0; i < dir_size; ++i) {
-        if (!strcmp(dir[i].filename, dir_name)) { // 重名了
+        if (!strcmp(dir[i].filename, filename)) { // 重名了
             return 1;
         }
     }
 
     // 创建 FCB
     fcb new_dir;
-    strcpy(new_dir.filename, dir_name);
-    new_dir.ext[0] = '\0';
-    new_dir.is_file = 0;
+    strcpy(new_dir.filename, filename);
+    strcpy(new_dir.ext, name + filename_size);
+    new_dir.is_file = is_file;
     time(&(new_dir.created_time));
     new_dir.len = 0;
     fat[new_dir.first = next_free_block()] = END;
