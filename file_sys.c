@@ -6,13 +6,13 @@ block0 blk0; // 引导块
 
 unsigned short fat[BLOCK_ASSET]; // FAT
 
-fcb cur_dir[20]; // 当前目录
-size_t cur_dir_size = 0;
+// fcb cur_dir[20]; // 当前目录
+// size_t cur_dir_size = 0;
 
 fcb fcb_stack[20]; // FCB 栈结构，用于存放每个层级
 size_t fcb_stack_size = 0;
 
-char cmd_arg[36]; // 输入命令
+char cmd_arg[256]; // 输入命令
 char cmd_args[16][16]; // 以空格（可多个连续空格）分隔 cmd_arg
 size_t cmd_args_size = 0;
 
@@ -56,9 +56,6 @@ static void get_dir(fcb *dir_ptr, fcb dir[], size_t *dir_size_ptr);
  * 初始化，读取数据文件到内存，如果数据文件存在则正常读取，不存在则先初始化内存的各种上下文信息，等程序退出时会自动创建数据文件并按照预定结构写入
  */
 void start_sys(void) {
-    FILE *data_file;
-    size_t read;
-
     // 分配虚拟磁盘空间
     dist = (char *) malloc(DIST_SIZE * sizeof(char));
     if (dist == NULL) {
@@ -67,17 +64,16 @@ void start_sys(void) {
     }
 
     // 打开实际磁盘文件
-    data_file = fopen(REAL_DATA_FILE, "rb");
+    FILE *data_file = fopen(REAL_DATA_FILE, "rb");
     if (data_file == NULL) { // 还未初始化，需要初始化一下
         // 初始化 BLOCK0
         blk0.data_start = DATA_START;
         strcpy(blk0.root_dir_fcb.filename, "/");
+        blk0.root_dir_fcb.ext[0] = '\0';
         blk0.root_dir_fcb.is_file = 0;
         time(&(blk0.root_dir_fcb.created_time));
         blk0.root_dir_fcb.len = 0;
         blk0.root_dir_fcb.first = ROOT_DIR_FIRST;
-        // 在虚拟磁盘中维护 BLOCK0
-        memcpy(dist, &blk0, sizeof(block0));
 
         // 初始化 FAT
         fat[0] = END;
@@ -87,8 +83,6 @@ void start_sys(void) {
         for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) {
             fat[i] = FREE;
         }
-        // 在虚拟磁盘中维护 FAT
-        memcpy(dist + FAT_START * BLOCK_SIZE, fat, sizeof(fat));
 
         // 初始化 fcb_stack
         fcb_stack[fcb_stack_size++] = blk0.root_dir_fcb;
@@ -111,22 +105,16 @@ void start_sys(void) {
         }
 
         // 初始化 BLOCK0，位置在第一个盘块
-        memcpy(&blk0, dist, sizeof(block0));
+        get_data_from_dist(&blk0, 0, sizeof(blk0));
 
         // 初始化 FAT
-        memcpy(fat, dist + FAT_START * BLOCK_SIZE, sizeof(fat));
+        get_data_from_dist(fat, FAT_START, sizeof(fat));
 
         // 初始化 fcb_stack
         fcb_stack[fcb_stack_size++] = blk0.root_dir_fcb;
 
         // 初始化当前目录
-        read = 0;
-        for (int i = blk0.root_dir_fcb.first; i != END; i = fat[i]) {
-            size_t n = MIN(BLOCK_SIZE, blk0.root_dir_fcb.len - read);
-            memcpy(cur_dir + read, dist + i * BLOCK_SIZE, n);
-            read += n;
-        }
-        cur_dir_size = (int) (blk0.root_dir_fcb.len / sizeof(fcb));
+        // get_dir(&(blk0.root_dir_fcb), cur_dir, &cur_dir_size);
     }
 }
 
@@ -258,6 +246,10 @@ static void my_ls() {
         return;
     }
 
+    fcb cur_dir[36];
+    size_t cur_dir_size = 0;
+    get_dir(&(fcb_stack[fcb_stack_size - 1]), cur_dir, &cur_dir_size);
+
     if (cmd_args_size == 1) { // 列出简单目录
         // 遍历当前目录
         for (int i = 0; i < cur_dir_size; ++i) {
@@ -318,7 +310,7 @@ static void my_format() {
     for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) fat[i] = FREE;
 
     // 当前目录 cur_dir
-    cur_dir[cur_dir_size = 0] = blk0.root_dir_fcb;
+    // cur_dir[cur_dir_size = 0] = blk0.root_dir_fcb;
 
     // FCB 栈
     fcb_stack[fcb_stack_size = 0] = blk0.root_dir_fcb;
@@ -340,8 +332,8 @@ static void my_cd() {
     size_t paths_size = 0;
 
     // 临时文件目录
-    fcb tmp_cur_dir[20];
-    size_t tmp_cur_dir_size = 0;
+    fcb cur_dir[20];
+    size_t cur_dir_size = 0;
 
     // 临时 FCB 目录层级栈
     fcb tmp_fcb_stack[20];
@@ -362,17 +354,16 @@ static void my_cd() {
         i = 1;
 
         // 读取根目录的内容
-        get_data_from_dist(tmp_cur_dir, blk0.root_dir_fcb.first, blk0.root_dir_fcb.len);
-        tmp_cur_dir_size = blk0.root_dir_fcb.len / sizeof(fcb);
+        get_data_from_dist(cur_dir, blk0.root_dir_fcb.first, blk0.root_dir_fcb.len);
+        cur_dir_size = blk0.root_dir_fcb.len / sizeof(fcb);
 
         // 根目录 FCB 入栈
         tmp_fcb_stack[tmp_fcb_stack_size++] = blk0.root_dir_fcb;
     } else { // 相对路径
         i = 0;
 
-        // 将当前目录信息拷贝一份
-        memcpy(tmp_cur_dir, cur_dir, sizeof(cur_dir));
-        tmp_cur_dir_size = cur_dir_size;
+        // 获取当前目录信息
+        get_dir(&(fcb_stack[fcb_stack_size - 1]), cur_dir, &cur_dir_size);
 
         // 将当前 FCB 栈信息拷贝一份
         memcpy(tmp_fcb_stack, fcb_stack, sizeof(fcb_stack));
@@ -404,14 +395,14 @@ static void my_cd() {
         }
 
         // 读取文件目录
-        get_data_from_dist(tmp_cur_dir, tar_fcb.first, tar_fcb.len);
-        tmp_cur_dir_size = tar_fcb.len / sizeof(fcb);
+        get_data_from_dist(cur_dir, tar_fcb.first, tar_fcb.len);
+        cur_dir_size = tar_fcb.len / sizeof(fcb);
     }
 
     // 这时已经找到了最终目标目录
     // 维护全局变量 cur_dir, fcb_stack
-    memcpy(cur_dir, tmp_cur_dir, sizeof(tmp_cur_dir));
-    cur_dir_size = tmp_cur_dir_size;
+    // memcpy(cur_dir, cur_dir, sizeof(cur_dir));
+    // cur_dir_size = cur_dir_size;
     memcpy(fcb_stack, tmp_fcb_stack, sizeof(tmp_fcb_stack));
     fcb_stack_size = tmp_fcb_stack_size;
 }
@@ -731,14 +722,14 @@ static int parse_path(const char src[16], char dest[16][16], size_t *dest_size_p
  * @param n 要读取的字节数
  */
 static void get_data_from_dist(void *dest, unsigned short first_block, size_t n) {
-    size_t offset = 0;
+    size_t dest_offset = 0;
     unsigned short cur_block = first_block;
 
-    while (n - offset > 0) {
-        size_t to_read = MIN(BLOCK_SIZE, n - offset);
-        memcpy(dest + offset, dist + cur_block * BLOCK_SIZE, to_read);
+    while (n - dest_offset > 0) {
+        size_t to_read = MIN(BLOCK_SIZE, n - dest_offset);
+        memcpy(dest + dest_offset, dist + cur_block * BLOCK_SIZE, to_read);
 
-        offset += to_read;
+        dest_offset += to_read;
         cur_block = fat[cur_block];
     }
 }
@@ -840,7 +831,7 @@ static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned ch
 static void rmfcb_in(fcb *dir_ptr, fcb *fcb_ptr) {
     // 获取指定目录
     fcb dir[20];
-    size_t dir_size;
+    size_t dir_size = 0;
     get_dir(dir_ptr, dir, &dir_size);
 
     // 找目标 FCB 在当前目录下的位置
@@ -864,7 +855,7 @@ static void rmfcb_in(fcb *dir_ptr, fcb *fcb_ptr) {
     } else { // 目标删除 FCB 是目录，则递归删除
         // 获取要删除目录的文件目录
         fcb tar_dir[20];
-        size_t tar_dir_size;
+        size_t tar_dir_size = 0;
         get_dir(fcb_ptr, tar_dir, &tar_dir_size);
 
         // 遍历，递归删除
