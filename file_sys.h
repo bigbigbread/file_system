@@ -8,11 +8,11 @@
 
 /*
  * 布局：
- *          0               1                 2               3             ...   999
- * +----------------+----------------+----------------+----------------+---------------+
- * |     BLOCK0     |            FAT(2000B)           | ROOT DIR FIRST |   DATA AREA   |
- * +----------------+----------------+----------------+-------------- -+---------------+
- *        1024B            1024B           1024B             1024B          ...
+ *         0                 1               2             ...   999
+ * +----------------+----------------+----------------+---------------+
+ * |    FAT(2000B) + ROOT_FCB(48B)   | ROOT DIR FIRST |   DATA AREA   |
+ * +----------------+----------------+-------------- -+---------------+
+ *        1024B           1024B             1024B          ...
  */
 
 #define BLOCK_SIZE 1024  // 块大小（字节）
@@ -24,10 +24,11 @@
 
 #define REAL_DATA_FILE "./data" // 实际磁盘数据文件
 
-#define FAT_START 1 // FAT 起始盘块号
+#define FAT_FIRST 0               // FAT 起始盘块号
+#define ROOT_DIR_FIRST 2          // 根目录起始盘块号
+#define DATA_START ROOT_DIR_FIRST // 数据区起始盘块号
 
-#define ROOT_DIR_FIRST 3 // 根目录起始盘块号
-#define DATA_START 3 // 数据区起始盘块号
+#define ROOT_FCB_OFFSET 2000 // root_fcb 所在虚拟磁盘位置偏移量
 
 #define MY_LS "my_ls"           // 列出当前目录命令
 #define MY_EXITSYS "my_exitsys" // 退出命令
@@ -48,11 +49,6 @@ typedef struct fcb {
     unsigned short len;    // 文件或文件目录大小（字节数）
     unsigned short first;  // 起始盘块号
 } fcb;
-
-typedef struct block0 {
-    fcb root_dir_fcb; // 根目录信息
-    unsigned short data_start; // 数据区起始盘块号
-} block0;
 
 void start_sys(void);
 

@@ -2,25 +2,20 @@
 
 char *dist; // 模拟磁盘
 
-block0 blk0; // 引导块
-
 unsigned short fat[BLOCK_ASSET]; // FAT
-
-// fcb cur_dir[20]; // 当前目录
-// size_t cur_dir_size = 0;
 
 fcb fcb_stack[20]; // FCB 栈结构，用于存放每个层级
 size_t fcb_stack_size = 0;
 
-char cmd_arg[256]; // 输入命令
-char cmd_args[16][16]; // 以空格（可多个连续空格）分隔 cmd_arg
-size_t cmd_args_size = 0;
+char cmd_arg[256];        // 输入命令
+char cmd_args[16][16];    // 以空格（可多个连续空格）分隔 cmd_arg
+size_t cmd_args_size = 0; // cmd_args size
 
 static void persistence(void);
 
 static void sys_exit(void);
 
-static void print_path(void);
+static void print_cur_path(void);
 
 static void my_ls();
 
@@ -66,28 +61,29 @@ void start_sys(void) {
     // 打开实际磁盘文件
     FILE *data_file = fopen(REAL_DATA_FILE, "rb");
     if (data_file == NULL) { // 还未初始化，需要初始化一下
-        // 初始化 BLOCK0
-        blk0.data_start = DATA_START;
-        strcpy(blk0.root_dir_fcb.filename, "/");
-        blk0.root_dir_fcb.ext[0] = '\0';
-        blk0.root_dir_fcb.is_file = 0;
-        time(&(blk0.root_dir_fcb.created_time));
-        blk0.root_dir_fcb.len = 0;
-        blk0.root_dir_fcb.first = ROOT_DIR_FIRST;
-
         // 初始化 FAT
-        fat[0] = END;
-        fat[FAT_START] = FAT_START + 1;
-        fat[FAT_START + 1] = END;
+        fat[FAT_FIRST] = FAT_FIRST + 1;
+        fat[FAT_FIRST + 1] = END;
         fat[ROOT_DIR_FIRST] = END;
         for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) {
             fat[i] = FREE;
         }
+        // FAT 可以等退出的时候再刷新到虚拟磁盘，反正运行期间是不会读取和修改 FAT 的虚拟磁盘盘块的
+
+        // 初始化根目录 fcb
+        fcb root_dir_fcb;
+        strcpy(root_dir_fcb.filename, "/");
+        root_dir_fcb.ext[0] = '\0';
+        root_dir_fcb.is_file = 0;
+        root_dir_fcb.len = 0;
+        root_dir_fcb.first = ROOT_DIR_FIRST;
+        // 根目录 fcb 刷新回虚拟磁盘
+        memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(root_dir_fcb));
 
         // 初始化 fcb_stack
-        fcb_stack[fcb_stack_size++] = blk0.root_dir_fcb;
+        fcb_stack[fcb_stack_size++] = root_dir_fcb;
     } else {
-        // 读取实际磁盘文件到虚拟磁盘空间
+        // 分块读取实际磁盘文件到虚拟磁盘空间
         for (int i = 0; i < BLOCK_ASSET; i++) {
             if (BLOCK_SIZE != fread(dist + i * BLOCK_SIZE, sizeof(char), BLOCK_SIZE, data_file)) {
                 perror("Data file read error!");
@@ -104,17 +100,15 @@ void start_sys(void) {
             exit(EXIT_FAILURE);
         }
 
-        // 初始化 BLOCK0，位置在第一个盘块
-        get_data_from_dist(&blk0, 0, sizeof(blk0));
-
         // 初始化 FAT
-        get_data_from_dist(fat, FAT_START, sizeof(fat));
+        get_data_from_dist(fat, FAT_FIRST, sizeof(fat));
+
+        // 初始化根目录 fcb
+        fcb root_dir_fcb;
+        memcpy(&root_dir_fcb, dist + ROOT_FCB_OFFSET, sizeof(fcb));
 
         // 初始化 fcb_stack
-        fcb_stack[fcb_stack_size++] = blk0.root_dir_fcb;
-
-        // 初始化当前目录
-        // get_dir(&(blk0.root_dir_fcb), cur_dir, &cur_dir_size);
+        fcb_stack[fcb_stack_size++] = root_dir_fcb;
     }
 }
 
@@ -129,7 +123,7 @@ void command() {
     while (1) {
         cmd_args_size = 0; // 重置
 
-        print_path(); // 打印命令行前段路径
+        print_cur_path(); // 打印命令行前段路径
 
         fgets(cmd_arg, sizeof(cmd_arg), stdin); // 读取命令
         len = strlen(cmd_arg);
@@ -179,11 +173,8 @@ void command() {
  * 退出当前系统需要完成的收尾操作
  */
 static void sys_exit(void) {
-    // 刷新 blk0 到虚拟磁盘
-    memcpy(dist, &blk0, sizeof(blk0));
-
     // 刷新 fat 到虚拟磁盘
-    memcpy(dist + FAT_START * BLOCK_SIZE, fat, sizeof(fat));
+    memcpy(dist + FAT_FIRST * BLOCK_SIZE, fat, sizeof(fat));
 
     persistence(); // 虚拟磁盘持久化
     free(dist); // 释放分配内存
@@ -192,7 +183,7 @@ static void sys_exit(void) {
 /**
  * 遵循传统命令行格式，打印当前路径 + "# "，如 "/folder1/folder2# "
  */
-static void print_path(void) {
+static void print_cur_path(void) {
     char path[64];
     size_t path_size = 0;
     // 遍历一遍 fcb_stack 即可
