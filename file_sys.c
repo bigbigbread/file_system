@@ -4,7 +4,7 @@ char *dist; // 模拟磁盘
 
 unsigned short fat[BLOCK_ASSET]; // FAT
 
-fcb fcb_stack[20]; // FCB 栈结构，用于存放每个层级
+fcb fcb_stack[20]; // FCB 栈结构，用于存放每个层级，注意：此结构存放的仅仅只是 fcb 的副本，修改 fcb 的操作要注意一致性
 size_t fcb_stack_size = 0;
 
 char cmd_arg[256];        // 输入命令
@@ -39,13 +39,15 @@ static int get_fcb_from(fcb *dir_fcb_ptr, char filename[16], unsigned char is_fi
 
 static unsigned short next_free_block(void);
 
-static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned char is_file);
+static int create_fcb(fcb *prev_dir_fcb_ptr, fcb *cur_dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned char is_file);
 
 static void rmfcb_in(fcb *dir_ptr, fcb *fcb_ptr);
 
 static void rewrite_data(fcb *tar_fcb_ptr, char data[], size_t n);
 
 static void get_dir(fcb *dir_ptr, fcb dir[], size_t *dir_size_ptr);
+
+static void format();
 
 /**
  * 初始化，读取数据文件到内存，如果数据文件存在则正常读取，不存在则先初始化内存的各种上下文信息，等程序退出时会自动创建数据文件并按照预定结构写入
@@ -60,29 +62,9 @@ void start_sys(void) {
 
     // 打开实际磁盘文件
     FILE *data_file = fopen(REAL_DATA_FILE, "rb");
-    if (data_file == NULL) { // 还未初始化，需要初始化一下
-        // 初始化 FAT
-        fat[FAT_FIRST] = FAT_FIRST + 1;
-        fat[FAT_FIRST + 1] = END;
-        fat[ROOT_DIR_FIRST] = END;
-        for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) {
-            fat[i] = FREE;
-        }
-        // FAT 可以等退出的时候再刷新到虚拟磁盘，反正运行期间是不会读取和修改 FAT 的虚拟磁盘盘块的
-
-        // 初始化根目录 fcb
-        fcb root_dir_fcb;
-        strcpy(root_dir_fcb.filename, "/");
-        root_dir_fcb.ext[0] = '\0';
-        root_dir_fcb.is_file = 0;
-        root_dir_fcb.len = 0;
-        root_dir_fcb.first = ROOT_DIR_FIRST;
-        // 根目录 fcb 刷新回虚拟磁盘
-        memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(root_dir_fcb));
-
-        // 初始化 fcb_stack
-        fcb_stack[fcb_stack_size++] = root_dir_fcb;
-    } else {
+    if (data_file == NULL) // 还未初始化，需要初始化一下
+        format();
+    else {
         // 分块读取实际磁盘文件到虚拟磁盘空间
         for (int i = 0; i < BLOCK_ASSET; i++) {
             if (BLOCK_SIZE != fread(dist + i * BLOCK_SIZE, sizeof(char), BLOCK_SIZE, data_file)) {
@@ -101,7 +83,7 @@ void start_sys(void) {
         }
 
         // 初始化 FAT
-        get_data_from_dist(fat, FAT_FIRST, sizeof(fat));
+        memcpy(fat, dist + FAT_FIRST * BLOCK_SIZE, sizeof(fat));
 
         // 初始化根目录 fcb
         fcb root_dir_fcb;
@@ -188,6 +170,7 @@ static void print_cur_path(void) {
     size_t path_size = 0;
     // 遍历一遍 fcb_stack 即可
     for (int i = 0; i < fcb_stack_size; ++i) {
+        if (i > 1) path[path_size++] = '/';
         for (int j = 0; fcb_stack[i].filename[j] != '\0'; j++) {
             path[path_size++] = fcb_stack[i].filename[j];
         }
@@ -241,16 +224,20 @@ static void my_ls() {
     size_t cur_dir_size = 0;
     get_dir(&(fcb_stack[fcb_stack_size - 1]), cur_dir, &cur_dir_size);
 
+    // 长度为0就没必要往下执行了
+    if (cur_dir_size == 0) return;
+
     if (cmd_args_size == 1) { // 列出简单目录
         // 遍历当前目录
         for (int i = 0; i < cur_dir_size; ++i) {
             // 一行打印5个
-            if (i % 5 == 0) printf("\n");
+            if (i != 0 && i % 5 == 0) printf("\n");
 
             char name[24];
             sprintf(name, "%s%s", cur_dir[i].filename, cur_dir[i].ext);
             printf("%-32s", name);
         }
+        printf("\n");
     } else {
         // 带 "-a" 参数，表示列出目录时，需包含详细信息
         if (strcmp(cmd_args[1], "-a") != 0) {
@@ -292,19 +279,27 @@ static void my_format() {
         return;
     }
 
-    // blk0
-    time(&(blk0.root_dir_fcb.created_time));
-    blk0.root_dir_fcb.len = 0;
-
     // fat
+    fat[FAT_FIRST] = FAT_FIRST + 1;
+    fat[FAT_FIRST + 1] = END;
     fat[ROOT_DIR_FIRST] = END;
-    for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) fat[i] = FREE;
+    for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) {
+        fat[i] = FREE;
+    }
+    // FAT 可以等退出的时候再刷新到虚拟磁盘，反正运行期间是不会读取和修改 FAT 的虚拟磁盘盘块的
 
-    // 当前目录 cur_dir
-    // cur_dir[cur_dir_size = 0] = blk0.root_dir_fcb;
+    // 根目录 fcb
+    fcb root_dir_fcb;
+    strcpy(root_dir_fcb.filename, "/");
+    root_dir_fcb.ext[0] = '\0';
+    root_dir_fcb.is_file = 0;
+    root_dir_fcb.len = 0;
+    root_dir_fcb.first = ROOT_DIR_FIRST;
+    // 根目录 fcb 刷新回虚拟磁盘
+    memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(root_dir_fcb));
 
     // FCB 栈
-    fcb_stack[fcb_stack_size = 0] = blk0.root_dir_fcb;
+    fcb_stack[fcb_stack_size++] = root_dir_fcb;
 
     printf("Done\n");
 }
@@ -318,46 +313,31 @@ static void my_cd() {
         return;
     }
 
+    // 解析路径参数
     // 用户输入的路径，"a/b/c" --> ["a", "b", "c"]
     char paths[16][16];
     size_t paths_size = 0;
-
-    // 临时文件目录
-    fcb cur_dir[20];
-    size_t cur_dir_size = 0;
+    if (parse_path(cmd_args[1], paths, &paths_size)) {
+        printf("%s: No such directory\n", cmd_args[1]);
+        return;
+    }
+    // 如果解析后的路径为空，直接返回
+    if (paths_size == 0) return;
 
     // 临时 FCB 目录层级栈
     fcb tmp_fcb_stack[20];
     size_t tmp_fcb_stack_size = 0;
-
-    int i;
-
-    // 解析路径参数
-    if (parse_path(cmd_args[1], paths, &paths_size)) {
-        printf("%s: No such directory", cmd_args[1]);
-        return;
-    }
-
-    // 如果解析后的路径为空，直接返回
-    if (paths_size == 0) return;
-
+    int i = 0;
     if (!strcmp(paths[0], "/")) { // 绝对路径，以 "/" 起始的路径
         i = 1;
 
-        // 读取根目录的内容
-        get_data_from_dist(cur_dir, blk0.root_dir_fcb.first, blk0.root_dir_fcb.len);
-        cur_dir_size = blk0.root_dir_fcb.len / sizeof(fcb);
-
         // 根目录 FCB 入栈
-        tmp_fcb_stack[tmp_fcb_stack_size++] = blk0.root_dir_fcb;
+        tmp_fcb_stack[tmp_fcb_stack_size++] = fcb_stack[0];
     } else { // 相对路径
         i = 0;
 
-        // 获取当前目录信息
-        get_dir(&(fcb_stack[fcb_stack_size - 1]), cur_dir, &cur_dir_size);
-
         // 将当前 FCB 栈信息拷贝一份
-        memcpy(tmp_fcb_stack, fcb_stack, sizeof(fcb_stack));
+        memcpy(tmp_fcb_stack, fcb_stack, fcb_stack_size * sizeof(fcb));
         tmp_fcb_stack_size = fcb_stack_size;
     }
 
@@ -369,7 +349,7 @@ static void my_cd() {
         fcb tar_fcb;
         if (!strcmp(paths[i], "..")) { // 返回上一级目录
             if (tmp_fcb_stack_size == 1) { // 当前在根目录，没有上一级目录了，直接报错
-                printf("%s: No such directory", cmd_args[1]);
+                printf("%s: No such directory\n", cmd_args[1]);
                 return;
             }
 
@@ -378,23 +358,17 @@ static void my_cd() {
         } else { // 进入下一级目录
             // 不存在直接打印错误信息并退出
             if (get_fcb_from(&tmp_fcb_stack[tmp_fcb_stack_size - 1], paths[i], 0, &tar_fcb)) {
-                printf("%s: No such directory", cmd_args[1]);
+                printf("%s: No such directory\n", cmd_args[1]);
                 return;
             }
 
             tmp_fcb_stack[tmp_fcb_stack_size++] = tar_fcb; // 找到目标目录后将 FCB 入栈
         }
-
-        // 读取文件目录
-        get_data_from_dist(cur_dir, tar_fcb.first, tar_fcb.len);
-        cur_dir_size = tar_fcb.len / sizeof(fcb);
     }
 
     // 这时已经找到了最终目标目录
-    // 维护全局变量 cur_dir, fcb_stack
-    // memcpy(cur_dir, cur_dir, sizeof(cur_dir));
-    // cur_dir_size = cur_dir_size;
-    memcpy(fcb_stack, tmp_fcb_stack, sizeof(tmp_fcb_stack));
+    // 维护全局变量 fcb_stack
+    memcpy(fcb_stack, tmp_fcb_stack, tmp_fcb_stack_size * sizeof(fcb));
     fcb_stack_size = tmp_fcb_stack_size;
 }
 
@@ -424,36 +398,45 @@ static void my_mkdir() {
         }
     }
 
-    fcb cur_fcb; // 当前目录的 FCB
+    fcb tmp_fcb_stack[36]; // 临时 fcb 栈
+    size_t tmp_fcb_stack_size = 0;
     int i = 0;
     if (!strcmp(paths[0], "/")) { // 绝对路径
         i = 1;
-        cur_fcb = blk0.root_dir_fcb;
+        tmp_fcb_stack[tmp_fcb_stack_size++] = fcb_stack[0];
     } else { // 相对路径
         i = 0;
-        cur_fcb = fcb_stack[fcb_stack_size - 1];
+        memcpy(tmp_fcb_stack, fcb_stack, fcb_stack_size * sizeof(fcb));
+        tmp_fcb_stack_size = fcb_stack_size;
     }
 
     // 遍历路径段
     while (1) {
         fcb tar_fcb;
+        fcb *cur_fcb_ptr = &tmp_fcb_stack[tmp_fcb_stack_size - 1];
+        fcb *prev_fcb_ptr = tmp_fcb_stack_size == 1 ? NULL : &tmp_fcb_stack[tmp_fcb_stack_size - 2];
 
         if (i == paths_size - 1) { // 最后一个路径段
             // 存在目录，直接报错
-            if (!get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb)) {
+            if (!get_fcb_from(cur_fcb_ptr, paths[i], 0, &tar_fcb)) {
                 printf("%s: Directory already exist\n", cmd_arg);
                 return;
             }
 
-            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 0);
+            create_fcb(prev_fcb_ptr, cur_fcb_ptr, paths[i], &tar_fcb, 0);
             break;
         }
 
         // 不存在目录，需要创建
-        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
-            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 0);
+        if (get_fcb_from(cur_fcb_ptr, paths[i], 0, &tar_fcb))
+            create_fcb(prev_fcb_ptr, cur_fcb_ptr, paths[i], &tar_fcb, 0);
 
-        cur_fcb = tar_fcb;
+        tmp_fcb_stack[tmp_fcb_stack_size++] = tar_fcb;
+    }
+
+    // 维护 fcb_stack
+    for (int j = 0; j < fcb_stack_size && !strcmp(tmp_fcb_stack[j].filename, fcb_stack[j].filename); ++j) {
+        fcb_stack[j] = tmp_fcb_stack[j];
     }
 
     printf("%s: Create directory success\n", cmd_args[1]);
@@ -464,194 +447,194 @@ static void my_mkdir() {
  * 路径不能包含 "." 和 ".."
  */
 static void my_rmdir() {
-    if (cmd_args_size != 2) { // 参数长度校验
-        printf("Unknown command: %s\n", cmd_arg);
-        return;
-    }
-
-    // 解析路径
-    char paths[16][16];
-    size_t paths_size = 0;
-    if (parse_path(cmd_args[1], paths, &paths_size)) {
-        printf("Unknown command: %s\n", cmd_arg);
-        return;
-    }
-    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
-
-    // 校验合法性，路径不能包含 "." 和 ".."
-    for (int i = 0; i < paths_size; ++i) {
-        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
-            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
-            return;
-        }
-    }
-
-    // 校验当前位置是否是目标删除目录或在目标删除目录中
-    for (int i = 0, j = 0;; i++, j++) {
-        if (j == paths_size) {
-            printf("%s: Can't remove directory where you in", cmd_arg);
-            return;
-        }
-
-        if (i == fcb_stack_size || strcmp(fcb_stack[i].filename, paths[j]) != 0) break;
-    }
-
-    fcb prev_fcb; // 上一级目录的 FCB
-    fcb cur_fcb; // 当前目录的 FCB
-    int k = 0;
-    if (!strcmp(paths[0], "/")) { // 绝对路径
-        k = 1;
-        cur_fcb = blk0.root_dir_fcb;
-    } else { // 相对路径
-        k = 0;
-        cur_fcb = fcb_stack[fcb_stack_size - 1];
-        if (fcb_stack_size > 1) prev_fcb = fcb_stack[fcb_stack_size - 2];
-    }
-
-    // 遍历 paths，将 cur_fcb 移动到目标删除目录，同时维护 prev_fcb
-    for (; k < paths_size; k++) {
-        fcb tar_fcb;
-
-        // 不存在目录，返回错误
-        if (get_fcb_from(&cur_fcb, paths[k], 0, &tar_fcb)) {
-            printf("%s: No such directory\n", cmd_arg);
-            return;
-        }
-
-        prev_fcb = cur_fcb;
-        cur_fcb = tar_fcb;
-    }
-
-    // 删除目录
-    rmfcb_in(&prev_fcb, &cur_fcb);
+//    if (cmd_args_size != 2) { // 参数长度校验
+//        printf("Unknown command: %s\n", cmd_arg);
+//        return;
+//    }
+//
+//    // 解析路径
+//    char paths[16][16];
+//    size_t paths_size = 0;
+//    if (parse_path(cmd_args[1], paths, &paths_size)) {
+//        printf("Unknown command: %s\n", cmd_arg);
+//        return;
+//    }
+//    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
+//
+//    // 校验合法性，路径不能包含 "." 和 ".."
+//    for (int i = 0; i < paths_size; ++i) {
+//        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
+//            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
+//            return;
+//        }
+//    }
+//
+//    // 校验当前位置是否是目标删除目录或在目标删除目录中
+//    for (int i = 0, j = 0;; i++, j++) {
+//        if (j == paths_size) {
+//            printf("%s: Can't remove directory where you in", cmd_arg);
+//            return;
+//        }
+//
+//        if (i == fcb_stack_size || strcmp(fcb_stack[i].filename, paths[j]) != 0) break;
+//    }
+//
+//    fcb prev_fcb; // 上一级目录的 FCB
+//    fcb cur_fcb; // 当前目录的 FCB
+//    int k = 0;
+//    if (!strcmp(paths[0], "/")) { // 绝对路径
+//        k = 1;
+//        cur_fcb = blk0.root_dir_fcb;
+//    } else { // 相对路径
+//        k = 0;
+//        cur_fcb = fcb_stack[fcb_stack_size - 1];
+//        if (fcb_stack_size > 1) prev_fcb = fcb_stack[fcb_stack_size - 2];
+//    }
+//
+//    // 遍历 paths，将 cur_fcb 移动到目标删除目录，同时维护 prev_fcb
+//    for (; k < paths_size; k++) {
+//        fcb tar_fcb;
+//
+//        // 不存在目录，返回错误
+//        if (get_fcb_from(&cur_fcb, paths[k], 0, &tar_fcb)) {
+//            printf("%s: No such directory\n", cmd_arg);
+//            return;
+//        }
+//
+//        prev_fcb = cur_fcb;
+//        cur_fcb = tar_fcb;
+//    }
+//
+//    // 删除目录
+//    rmfcb_in(&prev_fcb, &cur_fcb);
 }
 
 /**
  * 创建文件，路径段不能含有 ".." 和 "."。
  */
 static void my_create() {
-    if (cmd_args_size != 2) { // 参数长度校验
-        printf("Unknown command: %s\n", cmd_arg);
-        return;
-    }
-
-    // 解析路径
-    char paths[16][16];
-    size_t paths_size = 0;
-    if (parse_path(cmd_args[1], paths, &paths_size)) {
-        printf("Unknown command: %s\n", cmd_arg);
-        return;
-    }
-    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
-
-    // 校验是否含有 "." 和 ".."
-    for (int i = 0; i < paths_size; ++i) {
-        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
-            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
-            return;
-        }
-    }
-
-    fcb cur_fcb; // 当前目录的 FCB
-    int i = 0;
-    if (!strcmp(paths[0], "/")) { // 绝对路径
-        i = 1;
-        cur_fcb = blk0.root_dir_fcb;
-    } else { // 相对路径
-        i = 0;
-        cur_fcb = fcb_stack[fcb_stack_size - 1];
-    }
-
-    // 遍历路径段
-    while (1) {
-        fcb tar_fcb;
-
-        // 最后一个路径段为文件名
-        if (i == paths_size - 1) {
-            if (!get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
-                printf("%s: File already exist", cmd_arg);
-                return;
-            }
-
-            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 1);
-            break;
-        }
-
-        // 不存在目录，需要创建
-        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
-            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 0);
-
-        cur_fcb = tar_fcb;
-    }
-
-    printf("%s: File created", cmd_arg);
+//    if (cmd_args_size != 2) { // 参数长度校验
+//        printf("Unknown command: %s\n", cmd_arg);
+//        return;
+//    }
+//
+//    // 解析路径
+//    char paths[16][16];
+//    size_t paths_size = 0;
+//    if (parse_path(cmd_args[1], paths, &paths_size)) {
+//        printf("Unknown command: %s\n", cmd_arg);
+//        return;
+//    }
+//    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
+//
+//    // 校验是否含有 "." 和 ".."
+//    for (int i = 0; i < paths_size; ++i) {
+//        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
+//            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
+//            return;
+//        }
+//    }
+//
+//    fcb cur_fcb; // 当前目录的 FCB
+//    int i = 0;
+//    if (!strcmp(paths[0], "/")) { // 绝对路径
+//        i = 1;
+//        cur_fcb = blk0.root_dir_fcb;
+//    } else { // 相对路径
+//        i = 0;
+//        cur_fcb = fcb_stack[fcb_stack_size - 1];
+//    }
+//
+//    // 遍历路径段
+//    while (1) {
+//        fcb tar_fcb;
+//
+//        // 最后一个路径段为文件名
+//        if (i == paths_size - 1) {
+//            if (!get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
+//                printf("%s: File already exist", cmd_arg);
+//                return;
+//            }
+//
+//            create_fcb(&cur_fcb, paths[i], &tar_fcb, 1);
+//            break;
+//        }
+//
+//        // 不存在目录，需要创建
+//        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
+//            create_fcb(&cur_fcb, paths[i], &tar_fcb, 0);
+//
+//        cur_fcb = tar_fcb;
+//    }
+//
+//    printf("%s: File created", cmd_arg);
 }
 
 /**
  * 删除文件，路径不能包含 "." 和 ".."
  */
 static void my_rm() {
-    if (cmd_args_size != 2) { // 参数长度校验
-        printf("Unknown command: %s\n", cmd_arg);
-        return;
-    }
-
-    // 解析路径
-    char paths[16][16];
-    size_t paths_size = 0;
-    if (parse_path(cmd_args[1], paths, &paths_size)) {
-        printf("Unknown command: %s\n", cmd_arg);
-        return;
-    }
-    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
-
-    // 校验是否含有 "." 和 ".."
-    for (int i = 0; i < paths_size; ++i) {
-        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
-            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
-            return;
-        }
-    }
-
-    fcb prev_fcb; // 上一级目录的 FCB
-    fcb cur_fcb; // 当前目录的 FCB
-    int i = 0;
-    if (!strcmp(paths[0], "/")) { // 绝对路径
-        i = 1;
-        cur_fcb = blk0.root_dir_fcb;
-    } else { // 相对路径
-        i = 0;
-        cur_fcb = fcb_stack[fcb_stack_size - 1];
-        if (fcb_stack_size > 1) prev_fcb = fcb_stack[fcb_stack_size - 2];
-    }
-
-    // 遍历 paths，将 cur_fcb 移动到目标文件，同时维护 prev_fcb
-    while (1) {
-        fcb tar_fcb;
-
-        // 最后一个路径段为文件名
-        if (i == paths_size - 1) {
-            // 如果不存在目标文件
-            if (get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
-                printf("%s: No such file", cmd_arg);
-                return;
-            }
-
-            rmfcb_in(&prev_fcb, &cur_fcb);
-            break;
-        }
-
-        // 不存在目录，返回错误
-        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb)) {
-            printf("%s: No such file", cmd_arg);
-            return;
-        }
-
-        prev_fcb = cur_fcb;
-        cur_fcb = tar_fcb;
-    }
-
-    printf("%s: File created", cmd_arg);
+//    if (cmd_args_size != 2) { // 参数长度校验
+//        printf("Unknown command: %s\n", cmd_arg);
+//        return;
+//    }
+//
+//    // 解析路径
+//    char paths[16][16];
+//    size_t paths_size = 0;
+//    if (parse_path(cmd_args[1], paths, &paths_size)) {
+//        printf("Unknown command: %s\n", cmd_arg);
+//        return;
+//    }
+//    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
+//
+//    // 校验是否含有 "." 和 ".."
+//    for (int i = 0; i < paths_size; ++i) {
+//        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
+//            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
+//            return;
+//        }
+//    }
+//
+//    fcb prev_fcb; // 上一级目录的 FCB
+//    fcb cur_fcb; // 当前目录的 FCB
+//    int i = 0;
+//    if (!strcmp(paths[0], "/")) { // 绝对路径
+//        i = 1;
+//        cur_fcb = blk0.root_dir_fcb;
+//    } else { // 相对路径
+//        i = 0;
+//        cur_fcb = fcb_stack[fcb_stack_size - 1];
+//        if (fcb_stack_size > 1) prev_fcb = fcb_stack[fcb_stack_size - 2];
+//    }
+//
+//    // 遍历 paths，将 cur_fcb 移动到目标文件，同时维护 prev_fcb
+//    while (1) {
+//        fcb tar_fcb;
+//
+//        // 最后一个路径段为文件名
+//        if (i == paths_size - 1) {
+//            // 如果不存在目标文件
+//            if (get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
+//                printf("%s: No such file", cmd_arg);
+//                return;
+//            }
+//
+//            rmfcb_in(&prev_fcb, &cur_fcb);
+//            break;
+//        }
+//
+//        // 不存在目录，返回错误
+//        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb)) {
+//            printf("%s: No such file", cmd_arg);
+//            return;
+//        }
+//
+//        prev_fcb = cur_fcb;
+//        cur_fcb = tar_fcb;
+//    }
+//
+//    printf("%s: File created", cmd_arg);
 }
 
 /**
@@ -745,7 +728,7 @@ static void get_data_from_dist(void *dest, unsigned short first_block, size_t n)
  * @return 返回0：目标存在；返回1：不存在
  */
 static int get_fcb_from(fcb *dir_fcb_ptr, char filename[16], unsigned char is_file, fcb *fcb_ptr) {
-    fcb dir[20];
+    fcb dir[36];
     size_t dir_len = 0;
     get_dir(dir_fcb_ptr, dir, &dir_len);
 
@@ -766,20 +749,21 @@ static int get_fcb_from(fcb *dir_fcb_ptr, char filename[16], unsigned char is_fi
  * @return 小于 BLOCK_ASSET 的值：下一个空闲盘块；大于等于 BLOCK_ASSET 的值：磁盘已满，找不到空闲块
  */
 static unsigned short next_free_block(void) {
-    for (int i = blk0.data_start; i < BLOCK_ASSET; i++)
+    for (int i = DATA_START; i < BLOCK_ASSET; i++)
         if (fat[i] == FREE) return i;
     return BLOCK_ASSET;
 }
 
 /**
  * 在指定目录下创建空目录或空文件
- * @param dir_fcb_ptr 目标目录的 FCB
+ * @param prev_dir_fcb_ptr 目标目录的上一级目录 FCB，如果为 NULL 表示目标目录是根目录
+ * @param cur_dir_fcb_ptr 目标目录的 FCB
  * @param name 要创建目录或文件（包括扩展名）的名称
  * @param fcb_ptr 新 FCB 的接收缓冲区
  * @param is_file 创建目录还是创建文件
  * @return 0：成功创建；1：当前目录下有重名
  */
-static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned char is_file) {
+static int create_fcb(fcb *prev_dir_fcb_ptr, fcb *cur_dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned char is_file) {
     // 截取不包含扩展名的名称
     char filename[16];
     size_t filename_size = 0;
@@ -792,11 +776,11 @@ static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned ch
     }
 
     // 判断是否有重名
-    fcb dir[20];
-    size_t dir_size = 0;
-    get_dir(dir_fcb_ptr, dir, &dir_size);
-    for (int i = 0; i < dir_size; ++i) {
-        if (!strcmp(dir[i].filename, filename)) { // 重名了
+    fcb cur_dir[36];
+    size_t cur_dir_size = 0;
+    get_dir(cur_dir_fcb_ptr, cur_dir, &cur_dir_size);
+    for (int i = 0; i < cur_dir_size; ++i) {
+        if (!strcmp(cur_dir[i].filename, filename)) { // 重名了
             return 1;
         }
     }
@@ -809,17 +793,37 @@ static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned ch
     time(&(new_dir.created_time));
     new_dir.len = 0;
     fat[new_dir.first = next_free_block()] = END;
+    // 插入到当前目录中
+    cur_dir[cur_dir_size++] = new_dir;
 
-    // 插入到目录中
-    dir[dir_size++] = new_dir;
-
-    // 重新写回虚拟磁盘
+    // 将当前目录重新写回虚拟磁盘
     char buf[1024];
-    memcpy(buf, dir, dir_size * sizeof(fcb));
-    size_t buf_size = dir_size * sizeof(fcb);
-    rewrite_data(dir_fcb_ptr, buf, buf_size);
+    memcpy(buf, cur_dir, cur_dir_size * sizeof(fcb));
+    size_t buf_size = cur_dir_size * sizeof(fcb);
+    rewrite_data(cur_dir_fcb_ptr, buf, buf_size);
 
-    // 赋值到缓冲区
+    // 将上一级目录重新写回虚拟磁盘
+    if (prev_dir_fcb_ptr == NULL) // 当前目录是根目录，要特殊维护
+        // 维护根目录的 FCB 到虚拟磁盘中
+        memcpy(dist + ROOT_FCB_OFFSET, cur_dir_fcb_ptr, sizeof(fcb));
+    else {
+        fcb prev_dir[36];
+        size_t prev_dir_size = 0;
+        get_dir(prev_dir_fcb_ptr, prev_dir, &prev_dir_size);
+        for (int i = 0; i < prev_dir_size; ++i) {
+            if (prev_dir[i].is_file == cur_dir_fcb_ptr->is_file && !strcmp(prev_dir[i].filename, cur_dir_fcb_ptr->filename)) {
+                prev_dir[i] = *cur_dir_fcb_ptr;
+                break;
+            }
+        }
+
+        // 将上一级目录重新写回虚拟磁盘
+        memcpy(buf, prev_dir, prev_dir_size * sizeof(fcb));
+        buf_size = prev_dir_size * sizeof(fcb);
+        rewrite_data(prev_dir_fcb_ptr, buf, buf_size);
+    }
+
+    // 将新 FCB 赋值到接收缓冲区
     *fcb_ptr = new_dir;
 
     return 0;
@@ -884,7 +888,7 @@ static void rmfcb_in(fcb *dir_ptr, fcb *fcb_ptr) {
 }
 
 /**
- * 将数据重新写回目标 FCB 的虚拟磁盘
+ * 将数据重新写回目标 FCB 的虚拟磁盘（不会更新上一级目录）
  * @param tar_fcb_ptr 目标 FCB
  * @param data 字节数据
  * @param n 字节数
@@ -937,4 +941,32 @@ static void get_dir(fcb *dir_ptr, fcb dir[], size_t *dir_size_ptr) {
     // 获取指定目录
     get_data_from_dist(dir, dir_ptr->first, dir_ptr->len);
     *dir_size_ptr = dir_ptr->len / sizeof(fcb);
+}
+
+/**
+ * 格式化全局变量和虚拟磁盘
+ */
+static void format() {
+    // fat
+    fat[FAT_FIRST] = FAT_FIRST + 1;
+    fat[FAT_FIRST + 1] = END;
+    fat[ROOT_DIR_FIRST] = END;
+    for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) {
+        fat[i] = FREE;
+    }
+    // 刷新回虚拟磁盘
+    memcpy(dist + FAT_FIRST * BLOCK_SIZE, fat, sizeof(fat));
+
+    // 根目录 fcb
+    fcb root_dir_fcb;
+    strcpy(root_dir_fcb.filename, "/");
+    root_dir_fcb.ext[0] = '\0';
+    root_dir_fcb.is_file = 0;
+    root_dir_fcb.len = 0;
+    root_dir_fcb.first = ROOT_DIR_FIRST;
+    // 根目录 fcb 刷新回虚拟磁盘
+    memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(root_dir_fcb));
+
+    // FCB 栈
+    fcb_stack[fcb_stack_size++] = root_dir_fcb;
 }
