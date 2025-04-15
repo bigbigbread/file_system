@@ -493,61 +493,70 @@ static void my_rmdir() {
  * 创建文件，路径段不能含有 ".." 和 "."。
  */
 static void my_create() {
-//    if (cmd_args_size != 2) { // 参数长度校验
-//        printf("Unknown command: %s\n", cmd_arg);
-//        return;
-//    }
-//
-//    // 解析路径
-//    char paths[16][16];
-//    size_t paths_size = 0;
-//    if (parse_path(cmd_args[1], paths, &paths_size)) {
-//        printf("Unknown command: %s\n", cmd_arg);
-//        return;
-//    }
-//    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
-//
-//    // 校验是否含有 "." 和 ".."
-//    for (int i = 0; i < paths_size; ++i) {
-//        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
-//            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
-//            return;
-//        }
-//    }
-//
-//    fcb cur_fcb; // 当前目录的 FCB
-//    int i = 0;
-//    if (!strcmp(paths[0], "/")) { // 绝对路径
-//        i = 1;
-//        cur_fcb = blk0.root_dir_fcb;
-//    } else { // 相对路径
-//        i = 0;
-//        cur_fcb = fcb_stack[fcb_stack_size - 1];
-//    }
-//
-//    // 遍历路径段
-//    while (1) {
-//        fcb tar_fcb;
-//
-//        // 最后一个路径段为文件名
-//        if (i == paths_size - 1) {
-//            if (!get_fcb_from(&cur_fcb, paths[i], 1, &tar_fcb)) {
-//                printf("%s: File already exist", cmd_arg);
-//                return;
-//            }
-//
-//            create_fcb(&cur_fcb, paths[i], &tar_fcb, 1);
-//            break;
-//        }
-//
-//        // 不存在目录，需要创建
-//        if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
-//            create_fcb(&cur_fcb, paths[i], &tar_fcb, 0);
-//
-//        cur_fcb = tar_fcb;
-//    }
-//
-//    printf("%s: File created", cmd_arg);
+    if (cmd_args_size != 2) { // 参数长度校验
+        printf("Unknown command: %s\n", cmd_arg);
+        return;
+    }
+
+    // 解析路径
+    char paths[16][16];
+    size_t paths_size = 0;
+    if (parse_path(cmd_args[1], paths, &paths_size)) {
+        printf("Unknown command: %s\n", cmd_arg);
+        return;
+    }
+    if (paths_size == 0) return; // 如果解析后的路径为空，直接返回
+
+    // 校验是否含有 "." 和 ".."
+    for (int i = 0; i < paths_size; ++i) {
+        if (!strcmp(paths[i], "..") || !strcmp(paths[i], ".")) {
+            printf("%s: Path can't contain \".\" or \"..\"\n", cmd_arg);
+            return;
+        }
+    }
+
+    fcb tmp_fcb_stack[32];
+    size_t tmp_fcb_stack_size = 0;
+    int i = 0;
+    if (!strcmp(paths[0], "/")) { // 绝对路径
+        i = 1;
+        tmp_fcb_stack[tmp_fcb_stack_size++] = fcb_stack[0];
+    } else { // 相对路径
+        i = 0;
+        memcpy(tmp_fcb_stack, fcb_stack, fcb_stack_size * sizeof(fcb));
+        tmp_fcb_stack_size = fcb_stack_size;
+    }
+
+    // 遍历路径段
+    while (1) {
+        fcb tar_fcb;
+        fcb *prev_dir_fcb_ptr = tmp_fcb_stack_size == 1 ? NULL : &tmp_fcb_stack[tmp_fcb_stack_size - 2];
+        fcb *cur_dir_fcb_ptr = &tmp_fcb_stack[tmp_fcb_stack_size - 1];
+
+        // 最后一个路径段为文件名
+        if (i == paths_size - 1) {
+            if (!get_fcb_from(cur_dir_fcb_ptr, paths[i], 1, &tar_fcb)) {
+                printf("%s: File already exist\n", cmd_arg);
+                return;
+            }
+
+            create_fcb(prev_dir_fcb_ptr, cur_dir_fcb_ptr, paths[i], &tar_fcb, 1);
+            break;
+        }
+
+        // 不存在目录，需要创建
+        if (get_fcb_from(cur_dir_fcb_ptr, paths[i], 0, &tar_fcb))
+            create_fcb(prev_dir_fcb_ptr, cur_dir_fcb_ptr, paths[i], &tar_fcb, 0);
+
+        tmp_fcb_stack[tmp_fcb_stack_size++] = tar_fcb;
+    }
+
+    // 维护 fcb_stack
+    for (int j = 0; j < fcb_stack_size && !strcmp(tmp_fcb_stack[j].filename, fcb_stack[j].filename); ++j) {
+        fcb_stack[j] = tmp_fcb_stack[j];
+    }
+
+    printf("%s: File created\n", cmd_arg);
 }
 
 /**
@@ -791,7 +800,8 @@ static int create_fcb(fcb *prev_dir_fcb_ptr, fcb *cur_dir_fcb_ptr, char *name, f
         size_t prev_dir_size = 0;
         get_dir(prev_dir_fcb_ptr, prev_dir, &prev_dir_size);
         for (int i = 0; i < prev_dir_size; ++i) {
-            if (prev_dir[i].is_file == cur_dir_fcb_ptr->is_file && !strcmp(prev_dir[i].filename, cur_dir_fcb_ptr->filename)) {
+            if (prev_dir[i].is_file == cur_dir_fcb_ptr->is_file &&
+                !strcmp(prev_dir[i].filename, cur_dir_fcb_ptr->filename)) {
                 prev_dir[i] = *cur_dir_fcb_ptr;
                 break;
             }
