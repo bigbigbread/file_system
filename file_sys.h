@@ -30,14 +30,14 @@
 
 #define ROOT_FCB_OFFSET 2000 // root_fcb 所在虚拟磁盘位置偏移量
 
-#define MY_LS "my_ls"           // 列出当前目录命令
-#define MY_EXITSYS "my_exitsys" // 退出命令
-#define MY_FORMAT "my_format"   // 格式化命令
-#define MY_CD "my_cd"           // 改变当前目录命令
-#define MY_MKDIR "my_mkdir"     // 创建文件夹命令
-#define MY_RMDIR "my_rmdir"     // 删除文件夹命令
-#define MY_CREATE "my_create"   // 创建文件命令
-#define MY_RM "my_rm"           // 删除文件命令
+#define MY_LS "ls"           // 列出当前目录命令
+#define MY_EXITSYS "exit" // 退出命令
+#define MY_FORMAT "format"   // 格式化命令
+#define MY_CD "cd"           // 改变当前目录命令
+#define MY_MKDIR "mkdir"     // 创建文件夹命令
+#define MY_RMDIR "rmdir"     // 删除文件夹命令
+#define MY_CREATE "create"   // 创建文件命令
+#define MY_RM "rm"           // 删除文件命令
 
 #define MIN(x, y) ((x) < (y)) ? (x) : (y)
 

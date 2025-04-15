@@ -279,27 +279,7 @@ static void my_format() {
         return;
     }
 
-    // fat
-    fat[FAT_FIRST] = FAT_FIRST + 1;
-    fat[FAT_FIRST + 1] = END;
-    fat[ROOT_DIR_FIRST] = END;
-    for (int i = ROOT_DIR_FIRST + 1; i < BLOCK_ASSET; i++) {
-        fat[i] = FREE;
-    }
-    // FAT 可以等退出的时候再刷新到虚拟磁盘，反正运行期间是不会读取和修改 FAT 的虚拟磁盘盘块的
-
-    // 根目录 fcb
-    fcb root_dir_fcb;
-    strcpy(root_dir_fcb.filename, "/");
-    root_dir_fcb.ext[0] = '\0';
-    root_dir_fcb.is_file = 0;
-    root_dir_fcb.len = 0;
-    root_dir_fcb.first = ROOT_DIR_FIRST;
-    // 根目录 fcb 刷新回虚拟磁盘
-    memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(root_dir_fcb));
-
-    // FCB 栈
-    fcb_stack[fcb_stack_size++] = root_dir_fcb;
+    format();
 
     printf("Done\n");
 }
@@ -965,8 +945,9 @@ static void format() {
     root_dir_fcb.len = 0;
     root_dir_fcb.first = ROOT_DIR_FIRST;
     // 根目录 fcb 刷新回虚拟磁盘
-    memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(root_dir_fcb));
+    memcpy(dist + ROOT_FCB_OFFSET, &root_dir_fcb, sizeof(fcb));
 
     // FCB 栈
+    fcb_stack_size = 0;
     fcb_stack[fcb_stack_size++] = root_dir_fcb;
 }
