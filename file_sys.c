@@ -296,7 +296,7 @@ static void my_ls() {
  * 格式化文件系统
  */
 static void my_format() {
-    if (cmd_args_size > 2) { // 参数长度校验
+    if (cmd_args_size > 1) { // 参数长度校验
         printf("Unknown command: %s\n", cmd_arg);
         return;
     }
@@ -444,8 +444,19 @@ static void my_mkdir() {
     }
 
     // 遍历路径段
-    for (; i < paths_size; i++) {
+    while (1) {
         fcb tar_fcb;
+
+        if (i == paths_size - 1) { // 最后一个路径段
+            // 存在目录，直接报错
+            if (!get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb)) {
+                printf("%s: Directory already exist\n", cmd_arg);
+                return;
+            }
+
+            create_fcb_in(&cur_fcb, paths[i], &tar_fcb, 0);
+            break;
+        }
 
         // 不存在目录，需要创建
         if (get_fcb_from(&cur_fcb, paths[i], 0, &tar_fcb))
@@ -744,14 +755,14 @@ static void get_data_from_dist(void *dest, unsigned short first_block, size_t n)
  */
 static int get_fcb_from(fcb *dir_fcb_ptr, char filename[16], unsigned char is_file, fcb *fcb_ptr) {
     fcb dir[20];
-    get_data_from_dist(dir, dir_fcb_ptr->first, dir_fcb_ptr->len);
-    size_t dir_len = dir_fcb_ptr->len / sizeof(fcb);
+    size_t dir_len = 0;
+    get_dir(dir_fcb_ptr, dir, &dir_len);
 
-    int res = 0; // 是否存在
+    int res = 1; // 存在标志位
     for (int i = 0; i < dir_len; i++) {
         if (dir[i].is_file == is_file && !strcmp(dir[i].filename, filename)) {
             *fcb_ptr = dir[i];
-            res = 1;
+            res = 0;
             break;
         }
     }
@@ -783,7 +794,7 @@ static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned ch
     size_t filename_size = 0;
     for (int i = 0;; i++) {
         if (name[i] == '\0' || name[i] == '.') {
-            filename[filename_size++] = '\0';
+            filename[filename_size] = '\0';
             break;
         }
         filename[filename_size++] = name[i];
@@ -791,8 +802,8 @@ static int create_fcb_in(fcb *dir_fcb_ptr, char *name, fcb *fcb_ptr, unsigned ch
 
     // 判断是否有重名
     fcb dir[20];
-    get_data_from_dist(dir, dir_fcb_ptr->first, dir_fcb_ptr->len);
-    size_t dir_size = dir_fcb_ptr->len / sizeof(fcb);
+    size_t dir_size = 0;
+    get_dir(dir_fcb_ptr, dir, &dir_size);
     for (int i = 0; i < dir_size; ++i) {
         if (!strcmp(dir[i].filename, filename)) { // 重名了
             return 1;
